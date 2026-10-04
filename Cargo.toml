@@ -1,0 +1,63 @@
+[package]
+name = "d2s"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+authors = ["ResurrectedTrader"]
+description = "Read and write Diablo 2 save files (.d2s character saves and .d2i shared stash files). Supports D2 LOD (version 96) and D2 Resurrected (version 97-105) formats."
+license = "MIT"
+repository = "https://github.com/ResurrectedTrader/d2s-rs"
+readme = "README.md"
+keywords = ["diablo2", "d2r", "d2s", "save-file", "game-modding"]
+categories = ["parser-implementations", "games", "encoding"]
+include = ["src/**", "data/txt/**", "Cargo.toml", "README.md", "LICENSE"]
+
+[package.metadata.docs.rs]
+all-features = true
+
+[features]
+default = ["embedded-data"]
+# Embed the game data tables for versions 96, 97, 99 and 105 (~1.2 MB).
+embedded-data = []
+# Derive serde Serialize/Deserialize for all model types.
+serde = ["dep:serde", "bitflags/serde"]
+
+[dependencies]
+bitflags = "2"
+serde = { version = "1", features = ["derive"], optional = true }
+
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false }
+serde_json = "1"
+
+[[bench]]
+name = "save"
+harness = false
+required-features = ["embedded-data"]
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[[test]]
+name = "round_trip"
+required-features = ["embedded-data"]
+
+[[test]]
+name = "integration"
+required-features = ["embedded-data"]
+
+[[test]]
+name = "conversion"
+required-features = ["embedded-data"]
+
+[[test]]
+name = "overlay"
+required-features = ["embedded-data"]
+
+[[test]]
+name = "size_estimation"
+required-features = ["embedded-data"]
+
+[[test]]
+name = "json"
+required-features = ["embedded-data", "serde"]
