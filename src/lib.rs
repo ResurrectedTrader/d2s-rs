@@ -40,7 +40,7 @@ pub mod overlay;
 mod stat_id;
 mod text;
 
-pub use data::{ExternalData, ItemTypeInfo, StatInfo, TxtData};
+pub use data::{ExternalData, GameTable, ItemTypeInfo, StatInfo, TxtData};
 pub use enums::*;
 pub use error::{Error, Result};
 pub use model::*;

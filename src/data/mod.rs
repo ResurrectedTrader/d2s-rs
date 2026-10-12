@@ -2,7 +2,7 @@
 
 mod txt;
 
-pub use txt::TxtData;
+pub use txt::{GameTable, TxtData};
 
 use crate::error::Result;
 use crate::{ItemCode, StatId};
@@ -36,6 +36,10 @@ impl StatInfo {
 /// Information about an item type from the item tables and ItemTypes.txt.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ItemTypeInfo {
+    /// Inventory width from the same version's item-table row, when available.
+    pub inv_width: Option<u8>,
+    /// Inventory height from the same item-table row.
+    pub inv_height: Option<u8>,
     /// Item uses the compact save format.
     pub compact_save: bool,
     /// Item has variable inventory graphics.

@@ -13,6 +13,36 @@ use crate::{ItemCode, StatId};
 /// (itemtypes, itemstatcost, weapons, armor, misc).
 type FileSet = [&'static str; 5];
 
+/// A versioned source table retained by [`TxtData`].
+///
+/// Full TSV contents include columns outside the save parser's reduced
+/// [`ItemTypeInfo`] and [`StatInfo`] views. No gem/property tables are implied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum GameTable {
+    /// ItemTypes.txt, including type inheritance.
+    ItemTypes,
+    /// ItemStatCost.txt, including stat operation/description columns.
+    ItemStatCost,
+    /// Weapons.txt.
+    Weapons,
+    /// Armor.txt.
+    Armor,
+    /// Misc.txt.
+    Misc,
+}
+
+impl GameTable {
+    fn index(self) -> usize {
+        match self {
+            Self::ItemTypes => 0,
+            Self::ItemStatCost => 1,
+            Self::Weapons => 2,
+            Self::Armor => 3,
+            Self::Misc => 4,
+        }
+    }
+}
+
 #[cfg(feature = "embedded-data")]
 macro_rules! embedded_set {
     ($dir:literal, $types:literal, $isc:literal, $weapons:literal, $armor:literal, $misc:literal) => {
@@ -65,6 +95,7 @@ type FxMap<K, V> = HashMap<K, V, BuildHasherDefault<FxHasher>>;
 /// Parsed data for a single save version.
 #[derive(Debug, Clone)]
 struct VersionData {
+    source_tables: [Box<str>; 5],
     stats: Vec<StatInfo>,
     /// Item code -> (row index in weapons+armor+misc, precomputed type info).
     items: FxMap<u32, (usize, ItemTypeInfo)>,
@@ -157,7 +188,7 @@ impl TxtData {
         armor: &str,
         misc: &str,
     ) -> Result<TxtData> {
-        let data = parse_version(itemtypes, itemstatcost, weapons, armor, misc)?;
+        let data = parse_loaded_version([itemtypes, itemstatcost, weapons, armor, misc].map(Box::<str>::from))?;
         Ok(TxtData { versions: vec![(version, Slot::Loaded(data))] })
     }
 
@@ -166,6 +197,25 @@ impl TxtData {
         let mut v: Vec<u32> = self.versions.iter().map(|(v, _)| *v).collect();
         v.sort_unstable();
         v
+    }
+
+    /// Full source TSV for exactly `save_version`, without canonicalization.
+    ///
+    /// Preserves custom columns, blank/trailing cells, row order and line endings.
+    /// Embedded contents are borrowed directly; loaded table text is retained
+    /// once per data set, never copied into an item or save. Unsupported versions
+    /// fail rather than using another version's definitions.
+    pub fn table(&self, table: GameTable, save_version: u32) -> Result<&str> {
+        let slot = self
+            .versions
+            .iter()
+            .find(|(v, _)| *v == save_version)
+            .map(|(_, slot)| slot)
+            .ok_or_else(|| Error::UnsupportedVersion { version: save_version, available: self.versions() })?;
+        match slot {
+            Slot::Embedded(files, _) => Ok(files[table.index()]),
+            Slot::Loaded(data) => Ok(&data.source_tables[table.index()]),
+        }
     }
 
     fn version(&self, save_version: u32) -> Result<&VersionData> {
@@ -213,13 +263,20 @@ fn load_dir(dir: &Path) -> Result<VersionData> {
         })?;
         Ok(String::from_utf8_lossy(&std::fs::read(path)?).into_owned())
     };
-    parse_version(
-        &read("itemtypes.txt")?,
-        &read("itemstatcost.txt")?,
-        &read("weapons.txt")?,
-        &read("armor.txt")?,
-        &read("misc.txt")?,
-    )
+    parse_loaded_version([
+        read("itemtypes.txt")?.into_boxed_str(),
+        read("itemstatcost.txt")?.into_boxed_str(),
+        read("weapons.txt")?.into_boxed_str(),
+        read("armor.txt")?.into_boxed_str(),
+        read("misc.txt")?.into_boxed_str(),
+    ])
+}
+
+fn parse_loaded_version(source_tables: [Box<str>; 5]) -> Result<VersionData> {
+    let [itemtypes, itemstatcost, weapons, armor, misc] = &source_tables;
+    let mut data = parse_version(itemtypes, itemstatcost, weapons, armor, misc)?;
+    data.source_tables = source_tables;
+    Ok(data)
 }
 
 /// Splits file content into non-empty lines (a trailing `\r` is kept, matching the
@@ -373,6 +430,8 @@ struct ItemEntry {
     stackable: u8,
     quest: u8,
     quest_diff_check: u8,
+    inv_width: u8,
+    inv_height: u8,
 }
 
 fn parse_items(content: &str, type_name_to_index: &HashMap<String, usize>, out: &mut Vec<ItemEntry>) -> Result<()> {
@@ -385,6 +444,8 @@ fn parse_items(content: &str, type_name_to_index: &HashMap<String, usize>, out: 
     let col_stackable = header.col("stackable");
     let col_quest = header.col("quest");
     let col_quest_diff = header.col("questdiffcheck");
+    let col_width = header.col("invwidth");
+    let col_height = header.col("invheight");
 
     for line in lines {
         let line = line.trim_end_matches('\r');
@@ -409,6 +470,8 @@ fn parse_items(content: &str, type_name_to_index: &HashMap<String, usize>, out: 
             stackable: parse_u8(column(&columns, col_stackable)),
             quest: parse_u8(column(&columns, col_quest)),
             quest_diff_check: parse_u8(column(&columns, col_quest_diff)),
+            inv_width: parse_u8(column(&columns, col_width)),
+            inv_height: parse_u8(column(&columns, col_height)),
         });
     }
     Ok(())
@@ -475,6 +538,8 @@ fn parse_version(itemtypes: &str, itemstatcost: &str, weapons: &str, armor: &str
         let type_code = item_type.map_or(0, |t| t.code);
         let is = |set: &HashSet<u32>| type_code != 0 && set.contains(&type_code);
         let info = ItemTypeInfo {
+            inv_width: (item.inv_width > 0).then_some(item.inv_width),
+            inv_height: (item.inv_height > 0).then_some(item.inv_height),
             compact_save: item.compact_save != 0,
             has_variable_gfx: item_type.is_some_and(|t| t.var_inv_gfx > 0),
             is_armor: is(&armor_set),
@@ -491,25 +556,104 @@ fn parse_version(itemtypes: &str, itemstatcost: &str, weapons: &str, armor: &str
         map.insert(item.code, (index, info));
     }
 
-    Ok(VersionData { stats, items: map })
+    Ok(VersionData { stats, items: map, source_tables: Default::default() })
 }
 
-#[cfg(all(test, feature = "embedded-data"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    #[cfg(feature = "embedded-data")]
     fn embedded_versions_parse() {
         let data = TxtData::embedded();
         for v in [96, 97, 99, 105] {
             let cap = data.item_info(ItemCode::new("cap"), v).unwrap();
             assert!(cap.is_armor && !cap.is_weapon);
+            assert_eq!((cap.inv_width, cap.inv_height), (Some(2), Some(2)));
             let axe = data.item_info(ItemCode::new("axe"), v).unwrap();
             assert!(axe.is_weapon && !axe.is_armor);
+            assert_eq!((axe.inv_width, axe.inv_height), (Some(2), Some(3)));
             assert!(data.item_info(ItemCode::GOLD, v).unwrap().is_gold);
             assert!(data.item_info(ItemCode::new("cm1"), v).unwrap().is_charm);
             assert!(data.stat_info(StatId::STRENGTH, v).unwrap().save_bits > 0);
         }
         assert!(matches!(data.stat_info(StatId::STRENGTH, 98), Err(Error::UnsupportedVersion { .. })));
+    }
+
+    #[test]
+    fn full_table_access_preserves_custom_definitions() {
+        let itemtypes = "Code\tEquiv1\tEquiv2\tCustom\r\nweap\t\t\tretained\t\r\n";
+        let costs = "Stat\tID\tSave Bits\tSave Add\top\tCustom\r\nstrength\t0\t9\t32\t6\tunused-by-parser\t\r\n";
+        let weapons = "code\ttype\tcompactsave\tCustom\r\naxe\tweap\t0\tpreserved\t\r\n";
+        let empty = "code\ttype\tcompactsave\tCustom\r\n";
+        let data = TxtData::from_strings(777, itemtypes, costs, weapons, empty, empty).unwrap();
+        assert_eq!(data.table(GameTable::ItemTypes, 777).unwrap(), itemtypes);
+        assert_eq!(data.table(GameTable::ItemStatCost, 777).unwrap(), costs);
+        assert_eq!(data.table(GameTable::Weapons, 777).unwrap(), weapons);
+        assert_eq!(data.table(GameTable::Armor, 777).unwrap(), empty);
+        assert_eq!(data.table(GameTable::Misc, 777).unwrap(), empty);
+        assert!(data.item_info(ItemCode::new("axe"), 777).is_ok());
+        assert!(matches!(data.table(GameTable::Misc, 105), Err(Error::UnsupportedVersion { .. })));
+    }
+
+    #[test]
+    #[cfg(feature = "embedded-data")]
+    fn embedded_table_access_borrows_exact_source_without_parsing() {
+        let data = TxtData::new_embedded();
+        for (version, slot) in &data.versions {
+            let Slot::Embedded(files, parsed) = slot else { unreachable!() };
+            for table in
+                [GameTable::ItemTypes, GameTable::ItemStatCost, GameTable::Weapons, GameTable::Armor, GameTable::Misc]
+            {
+                let text = data.table(table, *version).unwrap();
+                assert_eq!(text, files[table.index()]);
+                assert_eq!(text.as_ptr(), files[table.index()].as_ptr());
+            }
+            assert!(parsed.get().is_none());
+            data.item_info(ItemCode::new("cap"), *version).unwrap();
+            assert!(parsed.get().unwrap().source_tables.iter().all(|text| text.is_empty()));
+        }
+        assert!(matches!(data.table(GameTable::Armor, 98), Err(Error::UnsupportedVersion { version: 98, .. })));
+    }
+
+    #[test]
+    fn inventory_dimensions_use_the_matching_item_row() {
+        let types = "Code\nweap\narmo\n";
+        let costs = "Stat\tID\nstrength\t0\n";
+        let weapons = "code\ttype\tinvwidth\tinvheight\naxe\tweap\t2\t3\n";
+        let armor = "code\ttype\tinvwidth\tinvheight\ncap\tarmo\t1\t2\n";
+        let misc = "code\ttype\tinvwidth\tinvheight\ngld\t\t0\t\n";
+        let data = TxtData::from_strings(777, types, costs, weapons, armor, misc).unwrap();
+        for (code, expected) in [("axe", (Some(2), Some(3))), ("cap", (Some(1), Some(2))), ("gld", (None, None))] {
+            let info = data.item_info(ItemCode::new(code), 777).unwrap();
+            assert_eq!((info.inv_width, info.inv_height), expected);
+        }
+        let missing = "code\ttype\naxe\tweap\n";
+        let data = TxtData::from_strings(778, types, costs, missing, "code\n", "code\n").unwrap();
+        let info = data.item_info(ItemCode::new("axe"), 778).unwrap();
+        assert_eq!((info.inv_width, info.inv_height), (None, None));
+    }
+
+    #[test]
+    fn directory_loaders_retain_the_selected_versions_source_tables() {
+        let directory = Path::new(env!("CARGO_MANIFEST_DIR")).join("data/txt");
+        let versions = TxtData::from_dir(&directory).unwrap();
+        let single = TxtData::from_version_dir(directory.join("105"), 777).unwrap();
+        assert_eq!(single.versions(), [777]);
+        for (table, file) in [
+            (GameTable::ItemTypes, "itemtypes.txt"),
+            (GameTable::ItemStatCost, "itemstatcost.txt"),
+            (GameTable::Weapons, "weapons.txt"),
+            (GameTable::Armor, "armor.txt"),
+            (GameTable::Misc, "misc.txt"),
+        ] {
+            let text = std::fs::read_to_string(directory.join("105").join(file)).unwrap();
+            assert_eq!(versions.table(table, 105).unwrap(), text);
+            assert_eq!(single.table(table, 777).unwrap(), text);
+            assert!(matches!(single.table(table, 105), Err(Error::UnsupportedVersion { .. })));
+        }
+        let cap = single.item_info(ItemCode::new("cap"), 777).unwrap();
+        assert_eq!((cap.inv_width, cap.inv_height), (Some(2), Some(2)));
     }
 }

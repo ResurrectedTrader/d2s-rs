@@ -100,6 +100,27 @@ for tab in &stash {
 }
 ```
 
+### Accessing game tables
+
+`TxtData::table` exposes the complete source TSV for an exact save version,
+including columns outside the codec's parsed views. This works with embedded
+and externally loaded tables; unsupported versions return an error.
+
+```rust
+use d2s::{ExternalData, GameTable, ItemCode, TxtData};
+
+let data = TxtData::embedded();
+let armor = data.table(GameTable::Armor, 105)?;
+let cap = data.item_info(ItemCode::new("cap"), 105)?;
+assert_eq!((cap.inv_width, cap.inv_height), (Some(2), Some(2)));
+```
+
+Available tables are ItemTypes, ItemStatCost, Weapons, Armor, and Misc.
+Embedded text is borrowed without parsing or copying. Externally loaded text is
+retained once per data set. Inventory dimensions are optional: missing or zero
+cells become `None`. Requirements, damage calculations, and stat synthesis belong
+in the consuming application.
+
 ## Overlay API (zero-copy access)
 
 For simple edits of the fixed-size header sections, the overlay API reads and writes fields
